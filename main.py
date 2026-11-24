@@ -2304,6 +2304,20 @@ class MainWindow(QMainWindow):
         side.addWidget(self.btn_restore)
         side.addWidget(self.btn_restore_all)
         side.addSpacing(6)
+        self.btn_check_all = QPushButton("全选")
+        self.btn_check_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_check_all.setToolTip("勾选所有未标记删除的片段（用于合并导出）")
+        self.btn_check_all.clicked.connect(lambda: self.set_all_checked(True))
+        self.btn_uncheck_all = QPushButton("取消全选")
+        self.btn_uncheck_all.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_uncheck_all.setToolTip("清空所有勾选")
+        self.btn_uncheck_all.clicked.connect(lambda: self.set_all_checked(False))
+        check_row = QHBoxLayout()
+        check_row.setSpacing(6)
+        check_row.addWidget(self.btn_check_all)
+        check_row.addWidget(self.btn_uncheck_all)
+        side.addLayout(check_row)
+        side.addSpacing(6)
         side.addWidget(self.btn_auto_del)
         side.addStretch(1)
         self.lbl_summary = QLabel("")
@@ -2648,6 +2662,28 @@ class MainWindow(QMainWindow):
             return
         self.on_segment_selected(row)
         self.play_segment(row)
+
+    def set_all_checked(self, checked=True):
+        """全选 / 取消全选：全选只勾选未标记删除的片段（删除段落不会参与合并导出）"""
+        if not self.segments:
+            return
+        self.table.blockSignals(True)
+        for i in range(len(self.segments)):
+            item = self.table.item(i, 0)
+            if item is None:
+                continue
+            on = bool(checked) and not self.segments[i].get("deleted")
+            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        self.table.blockSignals(False)
+        if checked:
+            self.checked_idx = {i for i in range(len(self.segments))
+                                if not self.segments[i].get("deleted")}
+            self.lbl_status.setText(f"已勾选 {len(self.checked_idx)} 个可导出片段（已删除的片段自动跳过）。")
+        else:
+            self.checked_idx = set()
+            self.lbl_status.setText("已取消全部勾选。")
+        self.update_buttons()
+        self._schedule_autosave()
 
     def on_table_item_changed(self, item):
         if item is None or item.column() != 0:
