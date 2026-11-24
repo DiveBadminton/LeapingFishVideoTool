@@ -53,23 +53,24 @@
 
 ### 方式一：下载 Release 压缩包（推荐）
 
-1. 到 [Releases](https://github.com/DiveBadminton/LeapingFishVideoTool/releases) 下载最新 `鱼跃快剪_win64.zip`（约 90MB，已内置 ffmpeg）。
+1. 到 [Releases](https://github.com/DiveBadminton/LeapingFishVideoTool/releases) 下载最新 `鱼跃快剪_win64.zip`（约 90MB，ffmpeg 已打进 exe，解压即用）。
 2. 解压到任意目录（建议不要放在中文/超长路径的最外层），得到：
 
    ```
    鱼跃快剪/
-   ├─ 鱼跃快剪.exe
-   ├─ bin/ffmpeg.exe      ← 已内置，无需另装
+   ├─ 鱼跃快剪.exe        ← 单文件，内含 ffmpeg，可直接拷走单独运行
+   ├─ README.md
+   ├─ LICENSE
    └─ 使用说明.md
    ```
 
-3. 双击 `鱼跃快剪.exe`，点「打开视频」选择 OBS 录好的文件即可。程序按相对路径找 ffmpeg，**整个文件夹一起移动**，不要只把 exe 拎出来。
+3. 双击 `鱼跃快剪.exe`，点「打开视频」选择 OBS 录好的文件即可。**不需要另外安装 ffmpeg，也不需要 bin 目录**；exe 可以单独复制到任何位置使用。
 
 > 若系统装了杀毒软件，首次运行单文件 exe 解压可能被启发式扫描，加白名单即可。
 
 ### 方式二：从源码运行
 
-> 仓库里没有 `bin\ffmpeg.exe`（静态版约 100MB，超过 GitHub 单文件限制），请自行下载后放进 `bin\`；Release 压缩包里则是已经配好的。
+> 仓库里没有 `bin\ffmpeg.exe`（静态版约 100MB，超过 GitHub 单文件限制），从源码运行请自行下载后放进 `bin\`；Release 里的 exe 已经把 ffmpeg 打在包内，无需这一步。
 
 ```bash
 git clone https://github.com/DiveBadminton/LeapingFishVideoTool.git
@@ -88,15 +89,17 @@ python main.py
 ```bat
 python -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --icon icon.ico --name 鱼跃快剪 ^
+  --add-binary "bin\ffmpeg.exe;bin" ^
   main.py
 ```
 
-产物是单文件 exe（约 54MB，内含 Qt 运行库）。发版时把这三样一起压成 zip 作为 Release 附件：
+`--add-binary` 把 ffmpeg 打进 exe（运行时解到 PyInstaller 的临时目录，程序会自动找到）。产物是单文件 exe（约 90MB，含 Qt 运行库与 ffmpeg），可直接分发。发版时把 exe 和文档压成 zip 作为 Release 附件：
 
 ```
 鱼跃快剪\鱼跃快剪.exe
-鱼跃快剪\bin\ffmpeg.exe
 鱼跃快剪\使用说明.md
+鱼跃快剪\README.md
+鱼跃快剪\LICENSE
 ```
 
 ```powershell
@@ -162,10 +165,10 @@ Compress-Archive -Path .\鱼跃快剪\* -DestinationPath .\鱼跃快剪_win64.zi
 这是设计如此：字幕条只覆盖片段开头（默认 3 秒），之后的画面原样复制，避免全片重编码拖慢速度、损失画质。
 
 **exe 启动报找不到 ffmpeg？**
-确认 `bin\ffmpeg.exe` 与 exe 保持原来的目录结构——Release 压缩包里是配好的，单独把 exe 拷出来就会找不到。请整文件夹使用。
+Release 里的 exe 已内置 ffmpeg，可单独运行；若你自行打包且没加 `--add-binary`，则需要把 `bin\ffmpeg.exe` 放在 exe 同级 `bin` 目录（程序也支持这种外置方式，优先级高于内置）。
 
 **杀毒软件报毒 / 首次启动慢？**
-单文件 PyInstaller 包在解压临时目录时可能被启发式扫描，属常见误报，可加白名单；首次启动解压约需几秒。
+单文件 PyInstaller 包在解压临时目录时可能被启发式扫描，属常见误报，可加白名单；exe 内含 ffmpeg，首次启动要把约 100MB 解到临时目录，通常几秒，第二次启动视系统缓存而定。
 
 ## 目录结构
 
@@ -173,7 +176,7 @@ Compress-Archive -Path .\鱼跃快剪\* -DestinationPath .\鱼跃快剪_win64.zi
 LeapingFishVideoTool/
 ├─ main.py               # 全部源码（单文件）
 ├─ icon.ico              # 程序图标
-├─ bin/ffmpeg.exe        # 视频处理引擎（必需，仓库中不含）
+├─ bin/ffmpeg.exe        # 视频处理引擎（源码运行需要；Release 的 exe 已内置）
 ├─ 工程/                  # 自动保存的 .vsplit 工程（本地生成）
 ├─ docs/images/          # README 配图
 ├─ README.md
@@ -184,6 +187,7 @@ LeapingFishVideoTool/
 ## 已知限制
 
 - 仅 Windows（代码里用了 `CREATE_NO_WINDOW`、`os.startfile` 等，Linux/macOS 需自行适配）。
+- 单文件 exe 内含 ffmpeg（约 100MB），每次启动要先解包到临时目录，首次启动通常需要几秒。
 - 精准切割的切点落在关键帧之间时，会连带重编码到下一个关键帧（GOP 越大，重编码段越长）。
 - 片头片尾若与原片分辨率/帧率差异过大，会先缩放补边，不做智能裁切。
 - 字幕条字体使用系统中文字体（微软雅黑/思源黑体等），缺失时回退默认字体，排版可能略有差异。

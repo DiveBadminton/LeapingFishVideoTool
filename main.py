@@ -362,11 +362,17 @@ def write_concat_list(files, path):
         fh.write("\n".join(lines) + "\n")
 
 
+def seek_time(t):
+    """流复制（-c copy）只能从关键帧起切，seek 目标必须精确且不能因四舍五入落到关键帧之前，
+    否则 ffmpeg 会退回上一个关键帧，导致片段开头重复上一段画面。这里用 6 位小数并加 0.5ms 余量。"""
+    return f"{max(0.0, float(t)) + 0.0005:.6f}"
+
+
 def build_copy_cmd(src, start, end, out_path, use_mp4=True):
     dur = max(0.01, end - start)
     cmd = [
         FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-        "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", src,
+        "-ss", seek_time(start), "-t", f"{dur:.6f}", "-i", src,
         "-map", "0:v:0?", "-map", "0:a?",
         "-c", "copy", "-avoid_negative_ts", "make_zero",
     ]
@@ -381,7 +387,7 @@ def build_encode_cmd(src, start, dur, out_path, info, use_mp4=True):
     crf = "20" if codec == "libx265" else "18"
     cmd = [
         FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-        "-ss", f"{start:.3f}", "-t", f"{max(0.01, dur):.3f}", "-i", src,
+        "-ss", f"{max(0.0, float(start)):.6f}", "-t", f"{max(0.01, dur):.6f}", "-i", src,
         "-map", "0:v:0?",
     ]
     if info.get("has_audio"):
@@ -593,7 +599,7 @@ def build_overlay_head_cmd(src, start, dur, out_path, info, banner, overlay_sec,
     show = max(0.05, float(overlay_sec))
     cmd = [
         FFMPEG, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-        "-ss", f"{start:.3f}", "-t", f"{max(0.01, dur):.3f}", "-i", src,
+        "-ss", f"{max(0.0, float(start)):.6f}", "-t", f"{max(0.01, dur):.6f}", "-i", src,
         "-loop", "1", "-framerate", f"{max(1, int(round(float(fps))))}", "-i", banner,
         "-filter_complex",
         f"[0:v:0][1:v]overlay=0:0:enable='lte(t,{show:.3f})'[v]",
@@ -1052,12 +1058,12 @@ class ExportWorker(QThread):
             secs = self.title_seconds if self._title_pending is None else self._title_pending
             if secs > 0.05:
                 ok, err = self._build_with_title(s, e, dur, core_path, 0.0, core_hi, secs)
-            elif self.precise:
+            elif self.precise or not self._on_keyframe(s):
                 ok, err = self._build_precise(s, e, dur, core_path, 0.0, core_hi)
             else:
                 self._cur_out = core_path
                 ok, err = self._step_copy(s, e, dur, core_path, 0.0, core_hi)
-        elif self.precise:
+        elif self.precise or not self._on_keyframe(s):
             ok, err = self._build_precise(s, e, dur, core_path, 0.0, core_hi)
         else:
             self._cur_out = core_path
@@ -1084,7 +1090,7 @@ class ExportWorker(QThread):
     def _keyframe_after(self, t):
         if not self.keyframes:
             return None
-        i = bisect.bisect_right(self.keyframes, t + 0.02)
+        i = bisect.bisect_right(self.keyframes, t + 0.0005)
         return self.keyframes[i] if i < len(self.keyframes) else None
 
     def _on_keyframe(self, t):
@@ -1166,8 +1172,10 @@ class ExportWorker(QThread):
         self.phase.emit(
             f"第 {self._seg_idx + 1} 段：片头字幕 {head_dur:.2f}s 重编码 + 其余原样复制 {body_dur:.2f}s")
         self._cur_out = head_path
+        # 字幕条显示时长延长到这一个关键帧为止，避免重编码段与复制段在边界处衔接出重复画面
+        head_show = max(secs, head_dur)
         cmd = build_overlay_head_cmd(self.src, s, head_dur, head_path, self.info,
-                                     self.banner, secs, self.use_mp4)
+                                     self.banner, head_show, self.use_mp4)
         ok, err = self._run(cmd, head_dur,
                             lambda f: self._emit(lo, lo + (hi - lo) * 0.55 * w_head, f))
         if ok != 0:
@@ -1187,9 +1195,33 @@ class ExportWorker(QThread):
         return ok == 0, err
 
     def _step_copy(self, s, e, dur, out, lo, hi):
-        cmd = build_copy_cmd(self.src, s, e, out, self.use_mp4)
-        ok, err = self._run(cmd, dur, lambda f: self._emit(lo, hi, f))
-        return ok == 0, err
+        """流复制。ffmpeg 的 -ss 在部分容器（如 OBS 录制的 mkv）会退回上一个关键帧，
+        多带出前面约一个 GOP 的画面（表现为片段开头重复）。这里复制后核对实际时长，
+        按多出的部分前移起点重试，直到与请求时长一致。"""
+        start = float(s)
+        for attempt in range(4):
+            emit = (lambda f: self._emit(lo, hi, f)) if attempt == 0 else (lambda f: None)
+            cmd = build_copy_cmd(self.src, start, e, out, self.use_mp4)
+            ok, err = self._run(cmd, dur, emit)
+            if ok != 0:
+                return False, err
+            try:
+                actual = float(probe_video(out).get("duration") or 0.0)
+            except Exception:
+                actual = 0.0
+            if actual <= 0.01:
+                return True, ""
+            excess = actual - dur          # >0：起点被退回，多带了前摇
+            gap = dur - actual             # >0：起点被推后，少了内容
+            if excess <= 0.30 and gap <= 0.30:
+                return True, ""
+            if excess > 0.30:
+                start = start + (excess - 0.02)
+                if start >= e - 0.5:
+                    return True, ""
+                continue
+            start = max(0.0, start - (gap - 0.02))
+        return True, ""
 
 
 # ---------------------------------------------------------------- 工程文件
